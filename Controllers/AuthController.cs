@@ -2,6 +2,7 @@
 using BIT.Identidade.API.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using System;
@@ -90,10 +91,55 @@ namespace BIT.Identidade.API.Controllers
             return CustomResponse();
         }
 
-        public async Task<UsuarioRespostaLoginViewModel> GerarJwt(string email)
+        private async Task<UsuarioRespostaLoginViewModel> GerarJwt(string email)
         {
             var user = await this.userManager.FindByEmailAsync(email);
             var claims = await this.userManager.GetClaimsAsync(user);
+
+            var identityClaims = await ObtenhaClaims(user, claims);
+
+            var encodedToken = ObtenhaToken(identityClaims);
+
+            return await ObtenhaRespostaToken(user, encodedToken, identityClaims);
+        }
+        
+        private async Task<UsuarioRespostaLoginViewModel> ObtenhaRespostaToken(IdentityUser user,
+                                                                                string encodedToken,
+                                                                                ClaimsIdentity claimsIdentity)
+        {
+            var response = new UsuarioRespostaLoginViewModel
+            {
+                AccessToken = encodedToken,
+                ExpiresIn = TimeSpan.FromHours(this.appSettings.ExpiracaoHoras).TotalSeconds,
+                UsuarioToken = new UsuarioToken
+                {
+                    Id = user.Id,
+                    Email = user.Email,
+                    Claims = claimsIdentity.Claims.Select(c => new UsuarioClaim { Type = c.Type, Value = c.Value })
+                }
+            };
+
+            return response;
+        }
+        private string ObtenhaToken(ClaimsIdentity identityClaims)
+        {
+            var key = Encoding.ASCII.GetBytes(this.appSettings.Secret);
+            var tokenHandler = new JwtSecurityTokenHandler();
+            //criação de fato do token
+            var token = tokenHandler.CreateToken(new SecurityTokenDescriptor
+            {
+                Issuer = this.appSettings.Emissor,
+                Audience = this.appSettings.ValidoEm,
+                Subject = identityClaims,
+                Expires = DateTime.UtcNow.AddHours(this.appSettings.ExpiracaoHoras),
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            });
+
+            return tokenHandler.WriteToken(token);
+        }
+        private async Task<ClaimsIdentity> ObtenhaClaims(IdentityUser user, IList<Claim> claims)
+        {
+            var identityClaims = new ClaimsIdentity();
             var userRoles = await this.userManager.GetRolesAsync(user);
 
             claims.Add(new Claim(JwtRegisteredClaimNames.Sub, user.Id));
@@ -106,41 +152,9 @@ namespace BIT.Identidade.API.Controllers
             {
                 claims.Add(new Claim("role", userRole));
             }
-
-            var identityClaims = new ClaimsIdentity();
             identityClaims.AddClaims(claims);
-
-            var tokenHandler = new JwtSecurityTokenHandler();
-
-            var key = Encoding.ASCII.GetBytes(this.appSettings.Secret);
-
-            //criação de fato do token
-            var token = tokenHandler.CreateToken(new SecurityTokenDescriptor
-            {
-                Issuer = this.appSettings.Emissor,
-                Audience = this.appSettings.ValidoEm,
-                Subject = identityClaims,
-                Expires = DateTime.UtcNow.AddHours(this.appSettings.ExpiracaoHoras),
-                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
-            });
-
-            var encodedToken = tokenHandler.WriteToken(token);
-
-            var response = new UsuarioRespostaLoginViewModel
-            {
-                AccessToken = encodedToken,
-                ExpiresIn = TimeSpan.FromHours(this.appSettings.ExpiracaoHoras).TotalSeconds,
-                UsuarioToken = new UsuarioToken
-                {
-                    Id = user.Id,
-                    Email = user.Email,
-                    Claims = claims.Select(c => new UsuarioClaim { Type = c.Type, Value = c.Value })
-                }
-            };
-
-            return response;
+            return identityClaims; 
         }
-
         private static long ToUnixEpochDate(DateTime date)
             => (long)Math.Round((date.ToUniversalTime() - new DateTimeOffset(1910, 1, 1, 0, 0, 0, TimeSpan.Zero)).TotalSeconds);
     }
